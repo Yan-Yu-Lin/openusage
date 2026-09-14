@@ -40,8 +40,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   </dict>
 </dict></plist>
 PLIST
-"$ROOT_DIR/script/embed_sparkle.sh" "$APP" "$APP/Contents/MacOS/OpenUsage" "$IDENTITY" '--options runtime'
-codesign --force --options runtime --sign "$IDENTITY" "$APP/Contents/Helpers/openusage"
-codesign --force --options runtime --sign "$IDENTITY" "$APP"
+# Like upstream's ad-hoc path, omit hardened runtime: ad-hoc binaries have no shared Team ID.
+"$ROOT_DIR/script/embed_sparkle.sh" "$APP" "$APP/Contents/MacOS/OpenUsage" "$IDENTITY" ''
+codesign --force --sign "$IDENTITY" "$APP/Contents/Helpers/openusage"
+codesign --force --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP"
 printf 'Built %s\n' "$APP"
