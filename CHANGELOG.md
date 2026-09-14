@@ -1,5 +1,13 @@
 # Changelog
 
+## OMP Usage 0.7.12-omp.1
+
+- Include OMP session history alongside Pi and native Claude/Codex logs, with narrow CLIProxy routing.
+- Preserve unpriced model tokens and deduplicate overlapping roots and exact replayed messages.
+- Add read-only OMP OAuth fallback credentials, exact-row reload, and OMP-owned refresh guidance.
+- Honor OMP directory/profile overrides and preserve explicitly empty profile selection.
+- Package an independently named local app without the upstream update feed or telemetry project.
+
 ## v0.7.13-beta.2
 
 ### New Features

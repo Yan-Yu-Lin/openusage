@@ -1,9 +1,8 @@
 import XCTest
 @testable import OpenUsage
 
-/// The pi log fold-in: parse pi's assistant usage lines, attribute them to the mapped OpenUsage card,
-/// and price by pi's carried cost (else the engine). Also covers the shared scan-merge that folds the
-/// pi slice into a provider's native scan.
+/// The pi/OMP log fold-in: scan their compatible assistant usage lines, attribute them to existing
+/// provider cards, and price by carried cost (else the engine) without double-counting shared roots.
 final class PiUsageScannerTests: XCTestCase {
     private func d(_ iso: String) -> Date { OpenUsageISO8601.date(from: iso)! }
 
@@ -34,15 +33,29 @@ final class PiUsageScannerTests: XCTestCase {
 
     private func line(
         id: String = "m1", ts: String = "2026-07-12T10:00:00.000Z", provider: String = "anthropic",
-        model: String = "claude-opus-4-8", input: Int = 100, output: Int = 50,
+        model: String = "claude-opus-4-8", api: String = "anthropic-messages",
+        input: Int = 100, output: Int = 50,
         cacheRead: Int = 0, cacheWrite: Int = 0, cacheWrite1h: Int = 0, total: Int = 150,
         cost: String? = "0.5"
     ) -> Data {
         let costJSON = cost.map { ",\"cost\":{\"total\":\($0)}" } ?? ""
         let json = """
-        {"type":"message","id":"\(id)","timestamp":"\(ts)","message":{"role":"assistant","provider":"\(provider)","model":"\(model)","usage":{"input":\(input),"output":\(output),"cacheRead":\(cacheRead),"cacheWrite":\(cacheWrite),"cacheWrite1h":\(cacheWrite1h),"totalTokens":\(total)\(costJSON)}}}
+        {"type":"message","id":"\(id)","timestamp":"\(ts)","message":{"role":"assistant","provider":"\(provider)","model":"\(model)","api":"\(api)","usage":{"input":\(input),"output":\(output),"cacheRead":\(cacheRead),"cacheWrite":\(cacheWrite),"cacheWrite1h":\(cacheWrite1h),"totalTokens":\(total)\(costJSON)}}}
         """
         return Data(json.utf8)
+    }
+
+    private func makeHome() throws -> URL {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenUsagePiOMP-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+        return home
+    }
+
+    private func write(_ data: Data, to file: URL) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: file)
     }
 
     // MARK: - Parsing
@@ -114,17 +127,42 @@ final class PiUsageScannerTests: XCTestCase {
         XCTAssertEqual(scan.series.daily.first?.costUSD ?? 0, 0.25, accuracy: 0.000_001)
     }
 
-    func testUnpriceableZeroCostBecomesUnknownModel() {
-        let entry = PiUsageScanner.parseLine(line(provider: "cursor", model: "mystery-model", cost: "0"))!
-        let scan = PiUsageScanner.aggregate(entries: [entry], cardID: "cursor", since: .distantPast, pricing: .empty)
-        XCTAssertTrue(scan.series.daily.isEmpty)
-        XCTAssertEqual(scan.unknownModelsByDay["2026-07-12"], ["mystery-model"])
+    func testUnknownCliproxyModelRetainsTokensWithoutInventingCost() throws {
+        let entry = try XCTUnwrap(PiUsageScanner.parseLine(line(
+            provider: "cliproxy", model: "gpt-6-astra", api: "openai-responses", cost: "0"
+        )))
+        let scan = PiUsageScanner.aggregate(
+            entries: [entry], cardID: "codex", since: .distantPast, pricing: .empty,
+            estimateCost: { _, _ in nil }
+        )
+
+        XCTAssertEqual(scan.series.daily.first?.totalTokens, 150)
+        XCTAssertNil(scan.series.daily.first?.costUSD)
+        XCTAssertEqual(scan.modelUsage?.daily.first?.models.first?.totalTokens, 150)
+        XCTAssertNil(scan.modelUsage?.daily.first?.models.first?.costUSD)
+        XCTAssertEqual(scan.unknownModelsByDay["2026-07-12"], ["gpt-6-astra"])
     }
 
-    func testDedupDropsRepeatedIDs() {
+    func testDedupDropsExactClonedEntries() {
         let entries = [PiUsageScanner.parseLine(line(id: "dup"))!, PiUsageScanner.parseLine(line(id: "dup"))!]
-        let scan = PiUsageScanner.aggregate(entries: PiUsageScanner.dedup(entries), cardID: "claude", since: .distantPast, pricing: .empty)
+        let scan = PiUsageScanner.aggregate(
+            entries: PiUsageScanner.dedup(entries), cardID: "claude", since: .distantPast, pricing: .empty
+        )
         XCTAssertEqual(scan.series.daily.first?.costUSD ?? 0, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(scan.series.daily.first?.totalTokens, 150)
+    }
+
+    func testDedupKeepsDistinctMessagesSharingShortID() {
+        let entries = [
+            PiUsageScanner.parseLine(line(id: "m1", cost: "0.5"))!,
+            PiUsageScanner.parseLine(line(id: "m1", input: 200, output: 100, total: 300, cost: "0.75"))!,
+        ]
+        let unique = PiUsageScanner.dedup(entries)
+        let scan = PiUsageScanner.aggregate(entries: unique, cardID: "claude", since: .distantPast, pricing: .empty)
+
+        XCTAssertEqual(unique.count, 2)
+        XCTAssertEqual(scan.series.daily.first?.totalTokens, 450)
+        XCTAssertEqual(scan.series.daily.first?.costUSD ?? 0, 1.25, accuracy: 0.0001)
     }
 
     func testFiltersToRequestedCard() {
@@ -137,10 +175,56 @@ final class PiUsageScannerTests: XCTestCase {
 
     // MARK: - Mapping and merge
 
-    func testProviderMapping() {
+    func testCliproxyMappingIsNarrowlyModelScoped() {
         XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "claude-agent-sdk"), "claude")
         XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "zhipu"), "zai")
+        XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "cliproxy", model: "gpt-6-astra"), "codex")
+        XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "cliproxy", model: "gpt-5.6-sol"), "codex")
+        XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "cliproxy", model: "codex-mini"), "codex")
+        XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "cliproxy", model: "o4-mini"), "codex")
+        XCTAssertEqual(PiProviderMapping.cardID(forPiProvider: "cliproxy", model: "claude-opus-5"), "claude")
+        XCTAssertNil(PiProviderMapping.cardID(forPiProvider: "openai", model: "gpt-6-astra"))
+        XCTAssertNil(PiProviderMapping.cardID(forPiProvider: "cliproxy", model: "llama-4"))
         XCTAssertNil(PiProviderMapping.cardID(forPiProvider: "nvidia-nim"))
+    }
+
+    func testScanUnionsNativePiAndOMPRoots() async throws {
+        let home = try makeHome()
+        try write(line(id: "pi", cost: "0.25"), to: home.appendingPathComponent(".pi/agent/sessions/a/pi.jsonl"))
+        try write(
+            line(id: "omp", provider: "cliproxy", model: "claude-opus-5", cost: "0.5"),
+            to: home.appendingPathComponent(".omp/agent/sessions/b/omp.jsonl")
+        )
+        let scanner = PiUsageScanner(
+            environment: FakeEnvironment(), homeDirectory: { home },
+            incrementalScanner: IncrementalJSONLScanner<PiUsageScanner.Entry>()
+        )
+
+        let result = await scanner.scan(
+            cardID: "claude", now: d("2026-07-13T12:00:00.000Z"), pricing: .empty
+        )
+        let scan = try XCTUnwrap(result)
+        XCTAssertEqual(scan.series.daily.first?.totalTokens, 300)
+        XCTAssertEqual(scan.series.daily.first?.costUSD ?? 0, 0.75, accuracy: 0.0001)
+    }
+
+    func testOverlappingPiAndOMPRootsDoNotDoubleCount() async throws {
+        let home = try makeHome()
+        let ompSessions = home.appendingPathComponent(".omp/agent/sessions")
+        try write(line(id: "shared"), to: ompSessions.appendingPathComponent("shared.jsonl"))
+        let scanner = PiUsageScanner(
+            environment: FakeEnvironment([
+                "PI_CODING_AGENT_SESSION_DIR": home.appendingPathComponent(".omp/agent").path,
+            ]),
+            homeDirectory: { home }, incrementalScanner: IncrementalJSONLScanner<PiUsageScanner.Entry>()
+        )
+
+        let result = await scanner.scan(
+            cardID: "claude", now: d("2026-07-13T12:00:00.000Z"), pricing: .empty
+        )
+        let scan = try XCTUnwrap(result)
+        XCTAssertEqual(scan.series.daily.first?.totalTokens, 150)
+        XCTAssertEqual(scan.series.daily.first?.costUSD ?? 0, 0.5, accuracy: 0.0001)
     }
 
     func testMergedSumsNativeAndPiOnSameDay() {

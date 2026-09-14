@@ -55,7 +55,7 @@ extension ClaudeAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
         case .notLoggedIn: .notLoggedIn
-        case .sessionExpired, .tokenExpired, .desktopTokenExpired, .swapTokenExpired: .authExpired
+        case .sessionExpired, .tokenExpired, .desktopTokenExpired, .swapTokenExpired, .ompTokenExpired: .authExpired
         case .invalidOAuthURL, .desktopCredentialsUnavailable: .authInvalid
         case .desktopPermissionRequired: .credentialAccess
         case .credentialsChanged: .other
@@ -77,7 +77,7 @@ extension CodexAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
         case .notLoggedIn: .notLoggedIn
-        case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired: .authExpired
+        case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired, .ompTokenExpired: .authExpired
         case .usageAPIKey: .notAvailable
         case .invalidAuthPayload: .authInvalid
         }

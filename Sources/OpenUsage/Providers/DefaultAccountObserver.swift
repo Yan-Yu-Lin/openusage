@@ -19,17 +19,24 @@ struct DefaultAccountObserver: Sendable {
     var environment: EnvironmentReading
     var files: TextFileAccessing
     var keychain: KeychainAccessing
+    var omp: OMPAuthStore
     var homeDirectory: @Sendable () -> URL
 
     init(
         environment: EnvironmentReading = ProcessEnvironmentReader(),
         files: TextFileAccessing = LocalTextFileAccessor(),
         keychain: KeychainAccessing = SecurityKeychainAccessor(),
+        omp: OMPAuthStore? = nil,
         homeDirectory: @escaping @Sendable () -> URL = { FileManager.default.homeDirectoryForCurrentUser }
     ) {
         self.environment = environment
         self.files = files
         self.keychain = keychain
+        self.omp = omp ?? OMPAuthStore(
+            environment: environment,
+            files: files,
+            homeDirectory: homeDirectory
+        )
         self.homeDirectory = homeDirectory
     }
 
@@ -94,10 +101,31 @@ struct DefaultAccountObserver: Sendable {
             return .unresolved(reason: "identity file unreadable: \(error.localizedDescription)")
         }
         guard let text else {
-            // No state file. A credential file without it can't be attributed; no footprint = absent.
-            return files.exists(anchor + "/.credentials.json")
-                ? .unresolved(reason: "credentials present but no identity file")
-                : .absent
+            // A native credential without Claude's state file could still win the provider's probe, so
+            // its identity remains unresolved. Only a genuinely native-empty home may inherit OMP's
+            // credential-specific identity for cache separation.
+            if files.exists(anchor + "/.credentials.json") {
+                return .unresolved(reason: "credentials present but no identity file")
+            }
+            guard let credential = omp.loadOAuthCredentials(provider: .anthropic).first else {
+                return .absent
+            }
+            let nativeServices = ClaudeAuthStore(
+                environment: environment, files: files, keychain: keychain, omp: omp
+            ).keychainServiceCandidates()
+            guard nativeServices.allSatisfy({ keychain.genericPasswordExists(service: $0) == false }) else {
+                return .unresolved(reason: "native Claude Keychain login present or unverifiable")
+            }
+            let identity = credential.email.map { "omp-email:\($0)" }
+                ?? credential.accountID.map { "omp-account:\($0.lowercased())" }
+            guard let identity else {
+                return .unresolved(reason: "OMP Claude credential present but names no account")
+            }
+            return .resolved(
+                identityKey: identity,
+                label: credential.email,
+                anchor: "\(credential.databasePath)#credential:\(credential.id)"
+            )
         }
         guard let parsed = try? JSONDecoder().decode(ClaudeStateFile.self, from: Data(text.utf8)),
               let account = parsed.oauthAccount,
@@ -164,9 +192,23 @@ struct DefaultAccountObserver: Sendable {
                 return .resolved(identityKey: claimID.lowercased(), label: email, anchor: anchor)
             }
         }
-        return sawFootprint
-            ? .unresolved(reason: "credentials present but no account identity")
-            : .absent
+        if sawFootprint {
+            return .unresolved(reason: "credentials present but no account identity")
+        }
+        guard let credential = omp.loadOAuthCredentials(provider: .openAICodex).first else {
+            return .absent
+        }
+        let payload = ProviderParse.jwtPayload(credential.accessToken)
+        let accountID = credential.accountID ?? Self.chatGPTAccountID(inIDTokenPayload: payload)
+        let identity = accountID?.lowercased() ?? credential.email.map { "omp-email:\($0)" }
+        guard let identity else {
+            return .unresolved(reason: "OMP Codex credential present but names no account")
+        }
+        return .resolved(
+            identityKey: identity,
+            label: credential.email,
+            anchor: "\(credential.databasePath)#credential:\(credential.id)"
+        )
     }
 
     /// The account id inside a Codex id_token: `chatgpt_account_id` under the

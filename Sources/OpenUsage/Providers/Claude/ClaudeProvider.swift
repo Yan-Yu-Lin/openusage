@@ -297,20 +297,20 @@ final class ClaudeProvider: ProviderRuntime {
     ) async -> ProviderSnapshot {
         var mapped = initialUsage
         // Local spend tiles, scanned natively from Claude Code's session logs and priced through the
-        // shared pricing store, merged with Claude usage that happened inside pi (attributed back here).
-        // Both scans run on their scanner actors, off the main actor, and do not require an OAuth login.
+        // shared pricing store, merged with Claude usage from pi/OMP (attributed back here). Both scans
+        // run on their scanner actors, off the main actor, and do not require an OAuth login.
         let pricing = await pricing()
         let nativeScan = await logUsageScanner.scan(now: now(), pricing: pricing)
         let piScan = allowsUnattributedPiUsage
             ? await PiUsageScanner.shared.scan(cardID: provider.id, now: now(), pricing: pricing)
             : nil
         var usageHistory: ProviderUsageHistory?
-        // Cancellation can land between the native and pi scans. Treat the pair as one unit so a
+        // Cancellation can land between the native and pi/OMP scans. Treat the pair as one unit so a
         // partial result cannot replace the last-good combined history in WidgetDataStore.
         if !Task.isCancelled, let scan = DailyUsageAccumulator.merged([nativeScan, piScan]) {
             let note = piScan == nil
                 ? "From your Claude usage history (estimated)"
-                : "From your Claude usage history and pi (estimated)"
+                : "From your Claude usage history and pi/OMP (estimated)"
             usageHistory = ProviderUsageHistory(
                 series: scan.series,
                 modelUsage: scan.modelUsage,
@@ -366,6 +366,12 @@ final class ClaudeProvider: ProviderRuntime {
         var working = state
         defer { state = working }
         var verificationResponse = try await verifyAccountIfNeeded(credentials: working.oauth)
+        let terminalAuthError: ClaudeAuthError
+        if case .omp = working.source {
+            terminalAuthError = .ompTokenExpired
+        } else {
+            terminalAuthError = .tokenExpired
+        }
         let response = try await ProviderAuthRetry.fetch(
             token: working.oauth.accessToken ?? "",
             attempt: { accessToken in
@@ -380,6 +386,21 @@ final class ClaudeProvider: ProviderRuntime {
             refreshAccessToken: {
                 if working.source == .swapVault {
                     throw ClaudeAuthError.swapTokenExpired
+                }
+                if case .omp(let path, let id) = working.source {
+                    let reloaded = await loadOffMainActor { [authStore] in
+                        authStore.loadOMPCredential(path: path, id: id)
+                    }
+                    guard let reloaded,
+                          let token = reloaded.oauth.accessToken,
+                          token != working.oauth.accessToken
+                    else {
+                        throw ClaudeAuthError.ompTokenExpired
+                    }
+                    working = reloaded
+                    expectedGeneration = expectedGeneration.replacing(reloaded)
+                    verificationResponse = try await self.verifyAccountIfNeeded(credentials: reloaded.oauth)
+                    return token
                 }
                 if working.source == .desktop {
                     throw ClaudeAuthError.desktopTokenExpired
@@ -400,7 +421,7 @@ final class ClaudeProvider: ProviderRuntime {
                 return refreshed.accessToken
             },
             connectionFailed: ClaudeUsageError.connectionFailed,
-            authExpired: ClaudeAuthError.tokenExpired
+            authExpired: terminalAuthError
         )
 
         let forceDesktopGeneration = working.source == .desktop

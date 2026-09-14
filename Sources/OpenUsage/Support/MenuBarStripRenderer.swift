@@ -115,7 +115,7 @@ enum MenuBarStripRenderer {
             size: NSSize(width: CGFloat(cgImage.width) / renderer.scale, height: CGFloat(cgImage.height) / renderer.scale)
         )
         image.isTemplate = true
-        image.accessibilityDescription = "OpenUsage, usage hidden while the screen is shared"
+        image.accessibilityDescription = "\(AppInfo.name), usage hidden while the screen is shared"
         return image
     }()
 
@@ -123,7 +123,7 @@ enum MenuBarStripRenderer {
     static let fallbackIcon: NSImage = {
         let image = NSImage(
             systemSymbolName: "gauge.with.dots.needle.bottom.50percent",
-            accessibilityDescription: "OpenUsage"
+            accessibilityDescription: AppInfo.name
         ) ?? NSImage()
         image.isTemplate = true
         return image
@@ -136,14 +136,9 @@ enum MenuBarStripRenderer {
 private struct MenuBarPrivacyLabel: View {
     var body: some View {
         HStack(spacing: 5) {
-            // The same mark and inset as `MenuBarIcon` (the art carries its own margin), sized to the
-            // strip's glyph box so the swap keeps the provider-glyph scale.
-            if let mark = ProviderMarks.mark(for: "openusage") {
-                ProviderIconShape(mark: mark, inset: 0.08)
-                    .fill(Color.black)
-                    .frame(width: 16, height: 16)
-            }
-            Text("OpenUsage")
+            Image(systemName: "chart.bar")
+                .frame(width: 16, height: 16)
+            Text(AppInfo.name)
                 .font(.system(size: 12, weight: .bold))
         }
         .foregroundStyle(.black)

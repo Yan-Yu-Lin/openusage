@@ -1,18 +1,22 @@
 import Foundation
 
-/// Builds a per-day token/cost series from pi's session logs for one OpenUsage card, so usage that
-/// happened inside pi (e.g. a Claude sub driven through pi) folds into that card's Usage Trend and
-/// spend tiles alongside its native source.
+/// Builds a per-day token/cost series from compatible pi and OMP session logs for one OpenUsage card,
+/// so usage that happened inside either agent folds into that card's Usage Trend and spend tiles
+/// alongside its native source.
 ///
-/// Pi records an authoritative per-message `usage.cost.total` (like OpenCode), so that carried cost is
-/// used when present; when pi logs a `$0` cost (subscription usage it doesn't impute), the tokens are
-/// priced through the shared engine instead — the same `carried cost, else price` rule the Claude and
-/// Codex log scanners use. Pi's usage shape differs from Claude Code's (`usage.input`/`output`,
-/// nested `usage.cost.total`), so it has its own parser rather than routing through those scanners.
+/// The logs record an authoritative per-message `usage.cost.total` (like OpenCode), so that carried
+/// cost is used when present; when a log records `$0` (subscription usage it doesn't impute), tokens
+/// are priced through the shared engine. Unknown models retain their measured tokens with nil cost and
+/// surface the existing unknown-model warning; no price is invented.
 ///
-/// An actor holding the versioned incremental parse cache (keyed path + size + mtime) in memory and
+/// Pi and OMP share the same message/usage JSONL shape, so one parser and incremental cache scans the
+/// union of both roots. Canonical root and file paths prevent shared overrides, symlinks, and nested
+/// roots from counting one file twice.
+///
+/// An actor holds the versioned incremental parse cache (keyed path + size + mtime) in memory and
 /// Application Support, so refreshes and relaunches parse only changed session files. A single shared
-/// instance is used by every consuming provider, so pi's logs are parsed once rather than once per card.
+/// instance is used by every consuming provider, so compatible logs are parsed once rather than once
+/// per card.
 actor PiUsageScanner {
     /// How a card prices a pi request that carries no cost of its own. Providers with their own
     /// request rules (Codex's long-context and priority tiers) supply their estimator; the rest use
@@ -27,7 +31,7 @@ actor PiUsageScanner {
 
     private static let sharedScanner = IncrementalJSONLScanner<Entry>(
         logTag: LogTag.plugin("pi"),
-        persistence: JSONLScanCachePersistence(namespace: "pi", schemaVersion: 1)
+        persistence: JSONLScanCachePersistence(namespace: "pi", schemaVersion: 2)
     )
 
     static func flushPersistentCacheWrites() async {
@@ -51,6 +55,9 @@ actor PiUsageScanner {
         var timestamp: Date
         var cardID: String
         var model: String
+        /// Raw route metadata keeps replay identity narrower than the destination card alone.
+        var provider: String
+        var api: String
         /// pi's own `usage.cost.total`, used directly when > 0; nil/0 falls through to engine pricing.
         var carriedCost: Double?
         /// The token buckets, for pricing the fall-through case.
@@ -59,16 +66,16 @@ actor PiUsageScanner {
         var reportedTotalTokens: Int
     }
 
-    /// Scan the last `daysBack` days of pi logs for one card. Returns nil when pi's sessions directory
-    /// has no log files at all, so a provider with no pi usage folds in nothing.
+    /// Scan the last `daysBack` days of pi and OMP logs for one card. Returns nil when neither session
+    /// root has log files, so a provider with no compatible usage folds in nothing.
     func scan(
         cardID: String, daysBack: Int = 30, now: Date = Date(), pricing: ModelPricing,
         estimateCost: CostEstimator? = nil
     ) async -> LogUsageScan? {
-        let directory = PiPaths.sessionsDirectory(environment: environment, homeDirectory: homeDirectory())
+        let directories = PiPaths.sessionDirectories(environment: environment, homeDirectory: homeDirectory())
         let since = JSONLScanning.sinceDate(daysBack: daysBack, now: now)
-        let cacheIdentity = directory.resolvingSymlinksInPath().path
-        let files = JSONLScanning.jsonlFiles(under: directory)
+        let cacheIdentity = "roots=\n" + directories.map(\.path).sorted().joined(separator: "\n")
+        let files = Self.sessionFiles(under: directories)
         guard !files.isEmpty else {
             _ = await scanner.items(
                 from: [], since: since, cacheIdentity: cacheIdentity, parse: Self.parseFile
@@ -86,6 +93,20 @@ actor PiUsageScanner {
             entries: Self.dedup(entries), cardID: cardID, since: since, pricing: pricing,
             estimateCost: estimateCost
         )
+    }
+
+    private static func sessionFiles(under directories: [URL]) -> [JSONLScanning.DiscoveredFile] {
+        var filesByCanonicalPath: [String: JSONLScanning.DiscoveredFile] = [:]
+        for directory in directories {
+            for var file in JSONLScanning.jsonlFiles(under: directory) {
+                let canonicalPath = URL(fileURLWithPath: file.path)
+                    .resolvingSymlinksInPath().standardizedFileURL.path
+                guard filesByCanonicalPath[canonicalPath] == nil else { continue }
+                file.path = canonicalPath
+                filesByCanonicalPath[canonicalPath] = file
+            }
+        }
+        return filesByCanonicalPath.values.sorted { $0.path < $1.path }
     }
 
     // MARK: - Parsing
@@ -110,9 +131,11 @@ actor PiUsageScanner {
               let message = object["message"] as? [String: Any],
               message["role"] as? String == "assistant",
               let providerID = message["provider"] as? String,
-              let cardID = PiProviderMapping.cardID(forPiProvider: providerID),
               let usage = message["usage"] as? [String: Any]
         else { return nil }
+
+        let model = (message["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let cardID = PiProviderMapping.cardID(forPiProvider: providerID, model: model) else { return nil }
 
         let cacheWrite = Int(ProviderParse.number(usage["cacheWrite"]) ?? 0)
         let cacheWrite1h = Int(ProviderParse.number(usage["cacheWrite1h"]) ?? 0)
@@ -129,7 +152,9 @@ actor PiUsageScanner {
             id: object["id"] as? String,
             timestamp: timestamp,
             cardID: cardID,
-            model: (message["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            model: model,
+            provider: providerID,
+            api: (message["api"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
             carriedCost: carriedCost,
             tokens: tokens,
             reportedTotalTokens: Int(ProviderParse.number(usage["totalTokens"]) ?? 0)
@@ -138,23 +163,57 @@ actor PiUsageScanner {
 
     // MARK: - Dedup and aggregation
 
-    /// Drop replayed lines that a forked/cloned session can duplicate under the same message id, keeping
-    /// the first occurrence. Lines without an id are always kept.
+    /// Drop exact replayed assistant entries from cloned/forked session ledgers. The message id is only
+    /// one part of the identity because short ids can legitimately recur in unrelated sessions.
     static func dedup(_ entries: [Entry]) -> [Entry] {
-        var seen: Set<String> = []
+        var seen: Set<ReplayKey> = []
         var out: [Entry] = []
         out.reserveCapacity(entries.count)
         for entry in entries {
-            if let id = entry.id, !seen.insert(id).inserted { continue }
-            out.append(entry)
+            guard let id = entry.id else {
+                out.append(entry)
+                continue
+            }
+            if seen.insert(ReplayKey(entry, id: id)).inserted { out.append(entry) }
         }
         return out
     }
 
-    /// Bucket the card's entries into local calendar days. Cost is pi's carried total when it recorded
-    /// one, else the tokens priced through `pricing`; a model that can't be priced and carries no cost
-    /// is excluded from the totals and surfaced as the tile's unknown-model warning, matching the log
-    /// scanners.
+    private struct ReplayKey: Hashable {
+        var id: String
+        var timestamp: Date
+        var cardID: String
+        var model: String
+        var provider: String
+        var api: String
+        var carriedCost: Double?
+        var input: Int
+        var cacheWrite5m: Int
+        var cacheWrite1h: Int
+        var cacheRead: Int
+        var output: Int
+        var reportedTotalTokens: Int
+
+        init(_ entry: Entry, id: String) {
+            self.id = id
+            self.timestamp = entry.timestamp
+            self.cardID = entry.cardID
+            self.model = entry.model
+            self.provider = entry.provider
+            self.api = entry.api
+            self.carriedCost = entry.carriedCost
+            self.input = entry.tokens.input
+            self.cacheWrite5m = entry.tokens.cacheWrite5m
+            self.cacheWrite1h = entry.tokens.cacheWrite1h
+            self.cacheRead = entry.tokens.cacheRead
+            self.output = entry.tokens.output
+            self.reportedTotalTokens = entry.reportedTotalTokens
+        }
+    }
+
+    /// Bucket the card's entries into local calendar days. Carried cost wins, otherwise the shared
+    /// pricing engine estimates it. Unknown models retain measured token totals with nil cost and are
+    /// surfaced through the accumulator's unknown-model warning.
     static func aggregate(
         entries: [Entry], cardID: String, since: Date, pricing: ModelPricing,
         estimateCost: CostEstimator? = nil
@@ -173,7 +232,7 @@ actor PiUsageScanner {
                 cost = estimated
             } else {
                 if let model = trimmedModel, entry.reportedTotalTokens > 0 {
-                    accumulator.addUnknownModel(day: day, model: model)
+                    accumulator.addUnpriced(day: day, tokens: entry.reportedTotalTokens, model: model)
                 }
                 continue
             }

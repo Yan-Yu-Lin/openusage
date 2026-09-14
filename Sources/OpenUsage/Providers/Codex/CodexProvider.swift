@@ -71,15 +71,18 @@ final class CodexProvider: ProviderRuntime {
     }
 
     func hasLocalCredentials() async -> Bool {
-        // Same sources as `refresh()`: auth.json candidates first, keychain as the fallback. Only a
-        // usable access token counts (see `hasUsableAccessToken`) — an API-key-only auth.json can't
-        // serve the usage API, so seeding it on would just show an error row.
+        // Preserve native precedence: auth.json candidates first, then Keychain, with OMP's readonly
+        // credential rows as the final fallback. Only access-token candidates can serve the usage API.
         let fileCandidates = authStore.loadAuthCandidates()
         if fileCandidates.contains(where: \.hasUsableAccessToken) {
             return true
         }
         let keychain = await loadOffMainActor { [authStore] in authStore.loadKeychainAuth() }
-        return keychain?.hasUsableAccessToken == true
+        if keychain?.hasUsableAccessToken == true {
+            return true
+        }
+        let ompCandidates = await loadOffMainActor { [authStore] in authStore.loadOMPAuthCandidates() }
+        return ompCandidates.contains(where: \.hasUsableAccessToken)
     }
 
     func refresh() async -> ProviderSnapshot {
@@ -92,7 +95,6 @@ final class CodexProvider: ProviderRuntime {
                 return try await probe(authState: candidate)
             } catch let error as CodexAuthError where error.allowsAuthFallback {
                 lastFallbackError = error
-                continue
             } catch {
                 return ProviderSnapshot.error(provider: provider, error: error)
             }
@@ -101,6 +103,19 @@ final class CodexProvider: ProviderRuntime {
         if let keychainCandidate = await loadOffMainActor({ [authStore] in authStore.loadKeychainAuth() }) {
             do {
                 return try await probe(authState: keychainCandidate)
+            } catch let error as CodexAuthError where error.allowsAuthFallback {
+                lastFallbackError = error
+            } catch {
+                return ProviderSnapshot.error(provider: provider, error: error)
+            }
+        }
+
+        let ompCandidates = await loadOffMainActor { [authStore] in authStore.loadOMPAuthCandidates() }
+        for candidate in ompCandidates {
+            do {
+                return try await probe(authState: candidate)
+            } catch let error as CodexAuthError where error.allowsAuthFallback {
+                lastFallbackError = error
             } catch {
                 return ProviderSnapshot.error(provider: provider, error: error)
             }
@@ -154,11 +169,11 @@ final class CodexProvider: ProviderRuntime {
     func snapshot(mapped initial: CodexMappedUsage) async -> ProviderSnapshot {
         var mapped = initial
         // Local spend tiles, scanned natively from the Codex CLI's session rollouts and priced through
-        // the shared pricing store, merged with Codex usage that happened inside pi or OpenCode. Those
-        // agents attribute their underlying Codex OAuth traffic back to this card.
+        // the shared pricing store, merged with Codex usage from pi/OMP or OpenCode. Those agents
+        // attribute their underlying Codex OAuth traffic back to this card.
         let pricing = await pricing()
-        // Three independent local sources: reading rollout files, pi's JSONL, and OpenCode's SQLite
-        // concurrently keeps the slowest one — not their sum — on the refresh's critical path.
+        // Three independent local sources: rollout files, pi/OMP JSONL, and OpenCode SQLite run
+        // concurrently, keeping only the slowest source on the refresh's critical path.
         let selectedFallbackModel = fallbackModel()
         async let native = logUsageScanner.scan(
             now: now(), pricing: pricing, fallbackModel: selectedFallbackModel
@@ -207,7 +222,7 @@ final class CodexProvider: ProviderRuntime {
 
     private static func localUsageSourceNote(hasPi: Bool, hasOpenCode: Bool) -> String {
         var sources = ["Codex logs"]
-        if hasPi { sources.append("pi") }
+        if hasPi { sources.append("pi/OMP") }
         if hasOpenCode { sources.append("OpenCode") }
         let joined = sources.count > 2
             ? sources.dropLast().joined(separator: ", ") + ", and " + sources[sources.count - 1]
@@ -231,10 +246,29 @@ final class CodexProvider: ProviderRuntime {
     private func fetchUsageWithRetry(accessToken: String, authState: inout CodexAuthState) async throws -> HTTPResponse {
         var working = authState
         defer { authState = working }
+        let terminalAuthError: CodexAuthError
+        if case .omp = working.source {
+            terminalAuthError = .ompTokenExpired
+        } else {
+            terminalAuthError = .tokenExpired
+        }
         return try await ProviderAuthRetry.fetch(
             token: accessToken,
             attempt: { try await self.usageClient.fetchUsage(accessToken: $0, accountID: working.auth.tokens?.accountID) },
             refreshAccessToken: {
+                if case .omp(let path, let id) = working.source {
+                    let reloaded = await loadOffMainActor { [authStore] in
+                        authStore.loadOMPAuth(path: path, id: id)
+                    }
+                    guard let reloaded,
+                          let token = reloaded.auth.tokens?.accessToken,
+                          token != working.auth.tokens?.accessToken
+                    else {
+                        throw CodexAuthError.ompTokenExpired
+                    }
+                    working = reloaded
+                    return token
+                }
                 guard let refreshToken = working.auth.tokens?.refreshToken, !refreshToken.isEmpty else {
                     throw CodexAuthError.tokenExpired
                 }
@@ -247,7 +281,7 @@ final class CodexProvider: ProviderRuntime {
                 }
             },
             connectionFailed: CodexUsageError.connectionFailed,
-            authExpired: CodexAuthError.tokenExpired
+            authExpired: terminalAuthError
         )
     }
 
@@ -261,6 +295,8 @@ final class CodexProvider: ProviderRuntime {
             return authStore.loadAuth(at: path)
         case .keychain:
             return authStore.loadKeychainAuth()
+        case .omp(let path, let id):
+            return authStore.loadOMPAuth(path: path, id: id)
         }
     }
 

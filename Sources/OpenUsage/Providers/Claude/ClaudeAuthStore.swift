@@ -9,6 +9,7 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
     case desktopCredentialsUnavailable
     case sessionExpired
     case tokenExpired
+    case ompTokenExpired
     case credentialsChanged
     case invalidOAuthURL(String)
 
@@ -28,6 +29,8 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
             return "Session expired. Run `claude` to log in again."
         case .tokenExpired:
             return "Token expired. Run `claude` to log in again."
+        case .ompTokenExpired:
+            return "OMP Claude login expired. Run `omp`, use `/login anthropic`, then refresh OpenUsage."
         case .credentialsChanged:
             return "Claude login changed during refresh. Refresh again."
         case .invalidOAuthURL(let value):
@@ -43,7 +46,7 @@ enum ClaudeAuthError: Error, LocalizedError, Equatable {
     /// `CodexAuthError.allowsAuthFallback`.
     var allowsAuthFallback: Bool {
         switch self {
-        case .sessionExpired, .tokenExpired, .desktopTokenExpired, .swapTokenExpired:
+        case .sessionExpired, .tokenExpired, .desktopTokenExpired, .swapTokenExpired, .ompTokenExpired:
             return true
         case .notLoggedIn, .desktopPermissionRequired, .desktopCredentialsUnavailable,
              .credentialsChanged, .invalidOAuthURL:
@@ -71,6 +74,7 @@ struct ClaudeAuthStore: Sendable {
     var files: TextFileAccessing
     var keychain: KeychainAccessing
     var desktop: ClaudeDesktopAuthStore
+    var omp: OMPAuthStore
     var now: @Sendable () -> Date
     let desktopOrganization: String?
     let expectedIdentityKey: String?
@@ -83,6 +87,7 @@ struct ClaudeAuthStore: Sendable {
         files: TextFileAccessing = LocalTextFileAccessor(),
         keychain: KeychainAccessing = SecurityKeychainAccessor(),
         desktop: ClaudeDesktopAuthStore? = nil,
+        omp: OMPAuthStore? = nil,
         desktopOrganization: String? = nil,
         expectedIdentityKey: String? = nil,
         desktopOnly: Bool = false,
@@ -94,6 +99,7 @@ struct ClaudeAuthStore: Sendable {
         self.files = files
         self.keychain = keychain
         self.desktop = desktop ?? ClaudeDesktopAuthStore(files: files, now: now)
+        self.omp = omp ?? OMPAuthStore(environment: environment, files: files, now: now)
         self.desktopOrganization = desktopOrganization?.lowercased()
         self.expectedIdentityKey = expectedIdentityKey?.lowercased() ?? swapAccount?.identityKey
         self.desktopOnly = desktopOnly
@@ -102,11 +108,10 @@ struct ClaudeAuthStore: Sendable {
         self.now = now
     }
 
-    /// All credential sources currently on disk/keychain, in fixed keychain-before-file order, for the
-    /// refresh loop to try in order. The provider probes each and — on an auth-expiry error
-    /// (`ClaudeAuthError.allowsAuthFallback`) — falls through to the next, so an external `claude`
-    /// re-login is picked up no matter which source it lands in, even when a stale/locked-out token still
-    /// sits in another. Re-read on every refresh; nothing is cached in memory.
+    /// All credential sources currently available, in native keychain/file/Desktop order with readonly
+    /// OMP rows trailing. The provider probes each and — on an auth-expiry error
+    /// (`ClaudeAuthError.allowsAuthFallback`) — falls through to the next, so an external re-login is
+    /// picked up no matter which source it lands in. Re-read on every refresh; nothing is cached here.
     func loadCredentialSet(
         allowDesktopInteraction: Bool = false,
         forceDesktopFallback: Bool = false
@@ -165,6 +170,15 @@ struct ClaudeAuthStore: Sendable {
             stored = stored.filter { liveUsageAvailability($0) == .available }
                 + stored.filter { liveUsageAvailability($0) != .available }
         }
+
+        // OMP owns and refreshes these credentials. They trail every native Claude source (including
+        // Desktop and Swap vaults) and are omitted from desktop-only organization cards and Swap account
+        // cards (which are pinned to a specific vault); scoped primary cards still verify the token's
+        // account/organization before publishing any usage.
+        if !desktopOnly, swapAccount == nil {
+            stored.append(contentsOf: loadOMPCredentials())
+        }
+
         let candidates = desktopOnly || swapAccount != nil ? stored : applyingEnvironmentToken(to: stored)
         return ClaudeCredentialLoad(candidates: candidates, desktopStatus: desktopStatus)
     }
@@ -234,7 +248,7 @@ struct ClaudeAuthStore: Sendable {
             try keychain.writeGenericPassword(service: service, value: text)
         case .desktop, .swapVault:
             return false
-        case .environment:
+        case .environment, .omp:
             return false
         }
         // NEVER log the credential blob/tokens — only that a rotation was persisted, and to where.
@@ -370,6 +384,26 @@ struct ClaudeAuthStore: Sendable {
             AppLog.debug(LogTag.auth("claude"), "credential source: \(only.source.label)")
         }
         return candidates
+    }
+
+    private func loadOMPCredentials() -> [ClaudeCredentialState] {
+        omp.loadOAuthCredentials(provider: .anthropic).map(ompCredentialState)
+    }
+
+    func loadOMPCredential(path: String, id: Int) -> ClaudeCredentialState? {
+        omp.loadOAuthCredential(provider: .anthropic, path: path, id: id).map(ompCredentialState)
+    }
+
+    private func ompCredentialState(_ credential: OMPOAuthCredential) -> ClaudeCredentialState {
+        ClaudeCredentialState(
+            oauth: ClaudeOAuth(
+                accessToken: credential.accessToken,
+                expiresAt: credential.expiresAt
+            ),
+            source: .omp(path: credential.databasePath, id: credential.id),
+            fullData: nil,
+            inferenceOnly: false
+        )
     }
 
     private func loadFileCredentials() -> ClaudeCredentialState? {

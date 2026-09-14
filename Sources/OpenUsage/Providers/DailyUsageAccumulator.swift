@@ -6,10 +6,8 @@ import Foundation
 /// format-specific parse/pricing loop.
 ///
 /// Days are keyed by the shared local-calendar `dayKey`, matching `SpendTileMapper`'s Today / Yesterday
-/// lookup — the day-key contract is one function, not five copies (drift here is the class of bug behind
-/// the ccusage false-zero fix). Only priced rows are added (every scanner skips unpriceable rows before
-/// counting), so every counted day carries a real cost; unpriceable models are tracked separately for
-/// the tile's warning triangle.
+/// lookup — the day-key contract is one function, not five copies. Measured tokens can be retained
+/// without a price; those models keep a nil cost and an explicit unknown-model warning.
 struct DailyUsageAccumulator {
     private var tokensByDay: [String: Int] = [:]
     private var costByDay: [String: Double] = [:]
@@ -33,6 +31,13 @@ struct DailyUsageAccumulator {
         if let fallbackPricingModel { fallbackPricingModelsByDay[day, default: []].insert(fallbackPricingModel) }
     }
 
+    /// Keep measured usage when the model has no published rate, without inventing a $0 price.
+    mutating func addUnpriced(day: String, tokens: Int, model: String) {
+        tokensByDay[day, default: 0] += tokens
+        modelsByDay[day, default: [:]][model, default: ModelAccumulator()].add(tokens: tokens, costUSD: nil)
+        addUnknownModel(day: day, model: model)
+    }
+
     /// Merge already-built scans (a provider's native log scan plus its pi slice) into one, by replaying
     /// each scan's per-model daily usage through a fresh accumulator so the combined `series`,
     /// `modelUsage`, and unknown-model set stay consistent. Every input must be accumulator-built (its
@@ -48,10 +53,11 @@ struct DailyUsageAccumulator {
             }
             for day in scan.modelUsage?.daily ?? [] {
                 for model in day.models {
-                    // Skip cost-unknown entries rather than treating nil as $0 — their unknown-model
-                    // metadata is already carried through via unknownModelsByDay below.
-                    guard let cost = model.costUSD else { continue }
-                    accumulator.add(day: day.date, tokens: model.totalTokens, cost: cost, model: model.model)
+                    if let cost = model.costUSD {
+                        accumulator.add(day: day.date, tokens: model.totalTokens, cost: cost, model: model.model)
+                    } else {
+                        accumulator.addUnpriced(day: day.date, tokens: model.totalTokens, model: model.model)
+                    }
                 }
             }
             for (day, models) in scan.unknownModelsByDay {
@@ -70,10 +76,10 @@ struct DailyUsageAccumulator {
     }
 
     /// Assemble the scan: per-day tokens/cost (days sorted newest-first), the per-day model breakdown,
-    /// and the unknown-model set. Every counted day is priced, so its `costUSD` is always the real total.
+    /// and the unknown-model set. A wholly unpriced day has no dollar value, not a fabricated zero.
     func build() -> LogUsageScan {
         let days = tokensByDay.keys.sorted(by: >).map { day in
-            DailyUsageEntry(date: day, totalTokens: tokensByDay[day] ?? 0, costUSD: costByDay[day] ?? 0)
+            DailyUsageEntry(date: day, totalTokens: tokensByDay[day] ?? 0, costUSD: costByDay[day])
         }
         let modelUsage = ModelUsageSeries(daily: modelsByDay.keys.sorted(by: >).map { day in
             DailyModelUsageEntry(

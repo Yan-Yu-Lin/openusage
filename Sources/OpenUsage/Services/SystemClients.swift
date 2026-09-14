@@ -4,6 +4,11 @@ import Security
 
 protocol EnvironmentReading: Sendable {
     func value(for name: String) -> String?
+    func rawValue(for name: String) -> String?
+}
+
+extension EnvironmentReading {
+    func rawValue(for name: String) -> String? { value(for: name) }
 }
 
 struct ProcessEnvironmentReader: EnvironmentReading {
@@ -33,6 +38,14 @@ struct ProcessEnvironmentReader: EnvironmentReading {
             return snapshot.values[name]?.nilIfEmpty
         }
         return shellEnvironment.value(for: name)
+    }
+
+    func rawValue(for name: String) -> String? {
+        if let value = processEnvironment[name] { return value }
+        if Self.identityKeys.contains(name), let snapshot = launchSnapshot() {
+            return snapshot.values[name]
+        }
+        return shellEnvironment.rawValue(for: name)
     }
 }
 

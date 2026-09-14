@@ -43,7 +43,8 @@ Sign in with Claude Code or Claude Desktop; OpenUsage reads the existing login. 
 1. The macOS keychain entry Claude Code maintains (its source of truth on macOS)
 2. `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR/.credentials.json`)
 3. Claude Desktop's encrypted login cache
-4. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+4. Active, unexpired OMP `anthropic` OAuth rows in `~/.omp/agent/agent.db` (read-only)
+5. `CLAUDE_CODE_OAUTH_TOKEN` environment variable
 
 When multiple accounts are available, a Claude Desktop login for the card's organization takes precedence
 when needed. OpenUsage verifies that a credential belongs to the correct account and organization.
@@ -95,9 +96,20 @@ history is deduplicated and filtered by its recorded account and organization; e
 ownership in Swap session histories stay excluded when multiple accounts are known. Broader SDK and
 Conductor history attribution is outside this change's scope.
 
+The OMP Usage fork never reads OMP refresh tokens or writes its database. If OMP's access token is
+rejected, the tracker re-reads that exact credential row in case OMP renewed it; otherwise renew the
+login in OMP (`/login anthropic`) and refresh. OMP credentials do not override native credentials or
+bypass the account/organization checks for scoped Claude cards.
+
 ## The spend tiles
 
 Today / Yesterday / Last 30 Days are computed **locally**: OpenUsage reads the Claude Code session logs under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR`) itself — no external tools needed. Symlinks are followed, so a projects folder linked into a synced location (say, a Dropbox folder) is read all the same. With one known account, Claude usage from the [pi](https://github.com/earendil-works/pi) coding agent counts too: OpenUsage reads pi's session logs under `~/.pi/agent/sessions/` (or `$PI_CODING_AGENT_SESSION_DIR`) and folds any Claude usage there into the same tiles and trend, so a Claude sub driven through pi still shows up here. pi records its own per-message cost, so those dollars come straight from pi rather than being re-estimated. Cowork (the Claude desktop app's agent mode) counts too: it writes the same logs into per-session folders under `~/Library/Application Support/Claude/local-agent-mode-sessions/`, and OpenUsage scans those as well, so desktop agent sessions show up in the tiles alongside terminal ones. Persisted `claude -p` runs count as well. Runs made with `--no-session-persistence` cannot appear because Claude deliberately writes no session log for OpenUsage to read. Advisor work recorded inside a message is counted once under the advisor's own model; the parent's main-model totals are kept separate, and ordinary iteration details are not counted again. A log's recorded fast or standard speed controls its price; OpenUsage does not infer speed from the event date. Days are grouped in your Mac's local time zone, so they line up with your own calendar. Each period is one tile showing cost and tokens together (`$4.08 · 1.2M tokens`); a day with no usage reads **No data** rather than a misleading `$0.00 · 0 tokens` — the same as every other spend-tracking provider. The live Session and Weekly meters are unaffected. The dollars are estimated from token counts at API rates (that's the ⓘ) using the shared [model pricing](../pricing.md); the token counts themselves are measured. No log data leaves your Mac.
+
+The OMP Usage fork also scans `~/.omp/agent/sessions`, with OMP directory/profile overrides respected.
+Native `anthropic` and `claude-agent-sdk` messages count, as do `cliproxy` messages using `claude-*`
+models. Pi and OMP roots are scanned together; overlapping paths and replayed entries count once.
+Positive recorded costs are retained; otherwise the pricing engine estimates costs. Unpriced models
+retain measured tokens with an unknown-price warning, rather than disappearing or claiming $0 cost.
 
 Sessions that do not identify their account, including usage from pi and third-party tools such as
 Conductor, count as long as OpenUsage has never seen more than one Claude account. Once multiple

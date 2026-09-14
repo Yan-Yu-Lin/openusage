@@ -22,6 +22,7 @@ struct ClaudeCredentialState: Hashable, Sendable {
         case desktop
         case swapVault
         case environment
+        case omp(path: String, id: Int)
 
         /// Log-safe source kind , NEVER the keychain service name or any token.
         var label: String {
@@ -32,6 +33,7 @@ struct ClaudeCredentialState: Hashable, Sendable {
             case .desktop: "desktop"
             case .swapVault: "swapVault"
             case .environment: "environment"
+            case .omp: "omp"
             }
         }
     }

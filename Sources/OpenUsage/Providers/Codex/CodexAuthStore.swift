@@ -30,6 +30,7 @@ struct CodexAuthState: Hashable, Sendable {
     enum Source: Hashable, Sendable {
         case file(path: String)
         case keychain
+        case omp(path: String, id: Int)
     }
 
     var auth: CodexAuth
@@ -50,6 +51,7 @@ enum CodexAuthError: Error, LocalizedError, Equatable {
     case tokenConflict
     case tokenRevoked
     case tokenExpired
+    case ompTokenExpired
     case usageAPIKey
     case invalidAuthPayload
 
@@ -65,6 +67,8 @@ enum CodexAuthError: Error, LocalizedError, Equatable {
             return "Token revoked. Run `codex` to log in again."
         case .tokenExpired:
             return "Token expired. Run `codex` to log in again."
+        case .ompTokenExpired:
+            return "OMP Codex login expired. Run `omp`, use `/login openai-codex`, then refresh OpenUsage."
         case .usageAPIKey:
             return "Usage not available for API key."
         case .invalidAuthPayload:
@@ -74,7 +78,7 @@ enum CodexAuthError: Error, LocalizedError, Equatable {
 
     var allowsAuthFallback: Bool {
         switch self {
-        case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired:
+        case .sessionExpired, .tokenConflict, .tokenRevoked, .tokenExpired, .ompTokenExpired:
             return true
         case .notLoggedIn, .usageAPIKey, .invalidAuthPayload:
             return false
@@ -93,6 +97,7 @@ struct CodexAuthStore: Sendable {
     var environment: EnvironmentReading
     var files: TextFileAccessing
     var keychain: KeychainAccessing
+    var omp: OMPAuthStore
     var now: @Sendable () -> Date
     var expectedIdentity: CodexAccountIdentity?
     var additionalAuthHomes: [String]
@@ -101,6 +106,7 @@ struct CodexAuthStore: Sendable {
         environment: EnvironmentReading = ProcessEnvironmentReader(),
         files: TextFileAccessing = LocalTextFileAccessor(),
         keychain: KeychainAccessing = SecurityKeychainAccessor(),
+        omp: OMPAuthStore? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         expectedIdentity: CodexAccountIdentity? = nil,
         additionalAuthHomes: [String] = []
@@ -108,6 +114,7 @@ struct CodexAuthStore: Sendable {
         self.environment = environment
         self.files = files
         self.keychain = keychain
+        self.omp = omp ?? OMPAuthStore(environment: environment, files: files, now: now)
         self.now = now
         self.expectedIdentity = expectedIdentity
         self.additionalAuthHomes = additionalAuthHomes
@@ -115,6 +122,14 @@ struct CodexAuthStore: Sendable {
 
     func loadAuthCandidates() -> [CodexAuthState] {
         authPaths().compactMap { loadAuth(at: $0) }
+    }
+
+    func loadOMPAuthCandidates() -> [CodexAuthState] {
+        omp.loadOAuthCredentials(provider: .openAICodex).map(ompAuthState)
+    }
+
+    func loadOMPAuth(path: String, id: Int) -> CodexAuthState? {
+        omp.loadOAuthCredential(provider: .openAICodex, path: path, id: id).map(ompAuthState)
     }
 
     /// Reads the credential from a single on-disk auth file — the targeted counterpart to
@@ -156,6 +171,8 @@ struct CodexAuthStore: Sendable {
             try files.writeText(path, text)
         case .keychain:
             try keychain.writeGenericPassword(service: Self.keychainService, value: text)
+        case .omp:
+            return
         }
     }
 
@@ -211,6 +228,16 @@ struct CodexAuthStore: Sendable {
         if auth.tokens?.accessToken?.isEmpty == false { return true }
         if auth.apiKey?.isEmpty == false { return true }
         return false
+    }
+
+    private func ompAuthState(_ credential: OMPOAuthCredential) -> CodexAuthState {
+        CodexAuthState(
+            auth: CodexAuth(tokens: CodexTokens(
+                accessToken: credential.accessToken,
+                accountID: credential.accountID
+            )),
+            source: .omp(path: credential.databasePath, id: credential.id)
+        )
     }
 
     private func joinPath(_ base: String, _ leaf: String) -> String {

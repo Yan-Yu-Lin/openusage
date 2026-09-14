@@ -1,5 +1,11 @@
 # Privacy & Usage Data
 
+> **OMP Usage fork:** `script/build_omp.sh` configures the bundled app with the inert
+> `OPENUSAGE_POSTHOG_TOKEN=phc_REPLACE_ME` value. It does not send the upstream telemetry described
+> below. Provider quota requests and public model-pricing downloads still work normally. OMP
+> credentials are read-only: only active access tokens are borrowed for their corresponding provider;
+> OMP refresh tokens are never read or rotated, and OMP's database is never written.
+
 OpenUsage always sends an **anonymous daily active ping** and **anonymous crash reports** so we can
 count active users and fix app crashes. These are not optional.
 

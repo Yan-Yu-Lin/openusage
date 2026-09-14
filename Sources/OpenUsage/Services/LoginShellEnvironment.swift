@@ -49,6 +49,13 @@ final class LoginShellEnvironment: @unchecked Sendable {
         return capturedEnvironment()[name]?.nilIfEmpty
     }
 
+    /// The captured value without collapsing an explicitly exported empty string into absence.
+    func rawValue(for name: String) -> String? {
+        if let env = cachedSnapshot() { return env[name] }
+        guard !Thread.isMainThread else { return nil }
+        return capturedEnvironment()[name]
+    }
+
     /// Spawn the capture eagerly off the main thread so the first provider refresh (and any UI read)
     /// finds the cache already warm and never blocks on the subprocess. Safe to call more than once.
     /// `.userInitiated`, not `.utility`: launch-time readers depend on this cache, and under

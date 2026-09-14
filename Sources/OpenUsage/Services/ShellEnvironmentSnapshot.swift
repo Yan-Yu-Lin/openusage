@@ -11,6 +11,7 @@ struct ShellEnvironmentSnapshot: Codable, Equatable, Sendable {
     /// be added here — the snapshot lives in UserDefaults as plain text.
     static let capturedKeys = [
         "CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "XSWAP_HOME", "XDG_DATA_HOME",
+        "PI_CODING_AGENT_DIR", "PI_CONFIG_DIR", "OMP_PROFILE", "PI_PROFILE",
         "USER_TYPE", "USE_LOCAL_OAUTH", "USE_STAGING_OAUTH",
         "CLAUDE_LOCAL_OAUTH_API_BASE", "CLAUDE_CODE_CUSTOM_OAUTH_URL",
     ]
@@ -30,7 +31,7 @@ struct ShellEnvironmentSnapshot: Codable, Equatable, Sendable {
         guard shellEnvironment.capturedSuccessfully else { return nil }
         var values: [String: String] = [:]
         for key in capturedKeys {
-            if let value = shellEnvironment.value(for: key) { values[key] = value }
+            if let value = shellEnvironment.rawValue(for: key) { values[key] = value }
         }
         return ShellEnvironmentSnapshot(values: values, capturedAt: capturedAt)
     }

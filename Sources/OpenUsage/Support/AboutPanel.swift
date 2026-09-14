@@ -27,6 +27,9 @@ enum AboutPanel {
         ]
 
         let credits = NSMutableAttributedString()
+        credits.append(NSAttributedString(string: "OMP Usage — an independent OpenUsage fork\n", attributes: base))
+        credits.append(link("OMP support by Arthur Lin", "https://github.com/Yan-Yu-Lin/openusage/tree/omp-support", base: base))
+        credits.append(NSAttributedString(string: "\n\nUpstream: ", attributes: base))
         credits.append(NSAttributedString(string: "Created by ", attributes: base))
         credits.append(link("Robin Ebers", "https://itsbyrob.in/x", base: base))
         credits.append(NSAttributedString(string: "\nMaintained also by ", attributes: base))

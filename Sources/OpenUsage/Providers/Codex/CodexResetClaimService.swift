@@ -49,11 +49,10 @@ final class CodexResetClaimService {
     }
 
     /// Production wiring: shares the Codex provider's auth store and usage client, so credential
-    /// selection can't drift from `refresh()` — every usable candidate in the provider's order (files
-    /// first, then keychain), and `claim` falls back across them on an auth rejection the same way the
-    /// provider's probe does. No token refresh here: the claim runs seconds after a successful usage
-    /// fetch (which rotates tokens back to disk), so a candidate that still fails auth is genuinely
-    /// dead and the next one is the right move.
+    /// selection can't drift from `refresh()` — every usable candidate in provider order (files,
+    /// Keychain, then readonly OMP rows), with auth rejection falling through the same way. No token
+    /// refresh here: the claim runs seconds after a successful usage fetch, so a candidate that still
+    /// fails auth is genuinely dead and the next one is the right move.
     convenience init(
         authStore: CodexAuthStore,
         usageClient: CodexUsageClient,
@@ -66,6 +65,7 @@ final class CodexResetClaimService {
                 if let keychain = await loadOffMainActor({ authStore.loadKeychainAuth() }) {
                     candidates.append(keychain)
                 }
+                candidates.append(contentsOf: await loadOffMainActor { authStore.loadOMPAuthCandidates() })
                 return candidates.compactMap { candidate in
                     guard candidate.hasUsableAccessToken, let token = candidate.auth.tokens?.accessToken else {
                         return nil

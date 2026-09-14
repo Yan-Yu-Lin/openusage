@@ -39,8 +39,8 @@ struct WidgetData: Hashable {
     /// state when none are available) and lights up like the spend rows — so it stays reachable even
     /// at "0 available", where `expiriesAt` is empty. Off for every other row.
     var showsResetExpiries: Bool = false
-    /// Names of models this period's spend used that have no known price. Their usage is excluded
-    /// unless a fallback estimate is enabled; either way the missing-price warning stays visible.
+    /// Names of models this period used that have no known price. Scanners may retain measured tokens
+    /// or use an explicit fallback estimate; the missing-price warning stays visible in either case.
     /// Drives the label warning triangle and its hover list. Empty for every other row.
     var unknownModels: [String] = []
     /// Period-scoped model spend/tokens for the Today / Yesterday / Last 30 Days hover popover. Nil for

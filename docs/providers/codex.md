@@ -38,6 +38,11 @@ Upgrading from a version without Swap support refreshes saved shell settings bef
 - Concurrent `xswap run` sessions are supported. Close Codex sessions before using `xswap switch`
   to change the global login, as required by Swap.
 
+The OMP Usage fork additionally reads active, unexpired `openai-codex` OAuth rows from
+`~/.omp/agent/agent.db` after native file and Keychain credentials. It never reads OMP refresh tokens,
+rotates them, or writes OMP's database. A rejected access token is re-read from the same row in case
+OMP renewed it. Otherwise use `/login openai-codex` in OMP and refresh the tracker.
+
 ## The spend tiles
 
 With multiple Codex accounts, spending without a reliable account owner is excluded, including
@@ -50,6 +55,15 @@ card's account and workspace. Live usage limits continue to work for every accou
 **Customize → Codex → Cost Estimates → Fallback Model** optionally estimates usage that has no known price. The default is **None**. Choose a public model to use its rates for those estimates; known model prices and recorded costs remain unchanged. The existing unknown-model warning and tooltip remain visible when a fallback is used. Switching the choice recalculates local history without changing the model Codex runs. See [model pricing](../pricing.md) for details.
 
 Today / Yesterday / Last 30 Days are computed **locally**: OpenUsage reads the Codex CLI's session rollouts under `~/.codex/sessions/` and `archived_sessions/` (or `$CODEX_HOME`) itself — no external tools needed. Symlinks are followed, so a Codex home linked into a synced location (say, a Dropbox folder) is read all the same. Codex usage from the [pi](https://github.com/earendil-works/pi) coding agent counts too: OpenUsage reads pi's session logs under `~/.pi/agent/sessions/` (or `$PI_CODING_AGENT_SESSION_DIR`) and folds any Codex usage there into the same tiles and trend. The same applies when OpenCode uses its built-in ChatGPT Pro/Plus OAuth login: OpenUsage reads the `openai` rows from OpenCode's local database — including OpenCode 2's newer logs — and attributes them to Codex. Newer OpenCode 2 logs only count from after that ChatGPT login; older OpenCode logs still count as before. OpenCode keeps a separate database and login per release channel (stable and preview), and each one is judged by its own login — a preview channel on ChatGPT still counts when the stable channel uses an API key, and vice versa. OpenCode API-key traffic is not included. Days are grouped in your Mac's local time zone, so they line up with your own calendar. Each period is one tile showing cost and tokens together (`$4.08 · 1.2M tokens`); a day with no usage reads **No data** rather than a misleading `$0.00 · 0 tokens` — the same as every other spend-tracking provider. The live Session and Weekly meters are unaffected. The dollars are estimated from token counts at API rates (that's the ⓘ) using the shared [model pricing](../pricing.md); sessions that ran on the fast/priority service tier — as recorded in each session's own log — use the fast rates for exactly those turns. Older logs without tier metadata, and everything else, price at standard rates; the current `config.toml` setting is not consulted, so flipping the tier never reprices past days. Auto-review usage keeps its `codex-auto-review` name in the model breakdown, while its cost uses the dated model fallback available for that event. Luna Reserve usage keeps its `gpt-reserve` name the same way, priced at GPT-5.6 Luna rates. The token counts themselves are measured. Subagent and forked sessions copy their parent session's token history into their own log; OpenUsage recognizes those copies and counts each token once, no matter how many subagents a session spawns. No log data leaves your Mac.
+
+The OMP Usage fork scans `~/.omp/agent/sessions` alongside Pi, respecting OMP directory/profile
+overrides. Native `openai-codex` messages and `cliproxy` GPT/Codex-family messages feed this card.
+Generic `openai` API-key routes and unknown providers are not classified by model name. Overlapping
+session roots and exact replayed messages count once. Unpriced OMP/Pi models retain measured tokens
+with an unknown-price warning; their missing cost is never reported as a measured $0.
+
+Subscription Session/Weekly meters are still the provider's account-wide figures, not an OMP-only
+quota. Local estimated API spend is not money charged in addition to your subscription.
 
 Large session files are read in small chunks instead of being loaded into memory. Unusually large
 individual records are skipped and logged; local spend can be incomplete if a skipped record contained usage.

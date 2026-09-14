@@ -1,9 +1,7 @@
 import XCTest
 @testable import OpenUsage
 
-/// Direct pins for the shared accumulate-then-assemble contract behind the Claude/Codex/Grok scanners
-/// (the class of drift behind the ccusage false-zero fix): one `dayKey` spelling, newest-first day
-/// order, per-model accumulation, always-priced days, and unknown models isolated from the series.
+/// Shared token/cost aggregation boundaries, including token-only usage with unknown pricing.
 final class DailyUsageAccumulatorTests: XCTestCase {
     func testDayKeyUsesInjectedCalendarAndZeroPads() {
         var calendar = Calendar(identifier: .gregorian)
@@ -38,15 +36,23 @@ final class DailyUsageAccumulatorTests: XCTestCase {
         XCTAssertEqual(models["opus"]?.totalTokens, 10)
     }
 
-    func testUnknownModelsStayOutOfTheSeries() {
-        var accumulator = DailyUsageAccumulator()
-        accumulator.addUnknownModel(day: "2024-06-02", model: "mystery-model")
+    func testUnpricedUsageSurvivesMergeWithoutInventingCost() throws {
+        var unpriced = DailyUsageAccumulator()
+        unpriced.addUnpriced(day: "2024-06-02", tokens: 900, model: "new-model")
+        unpriced.addUnpriced(day: "2024-06-03", tokens: 120, model: "new-model")
+        var priced = DailyUsageAccumulator()
+        priced.add(day: "2024-06-02", tokens: 100, cost: 0.5, model: "known-model")
 
-        let scan = accumulator.build()
-        // A day with only unpriceable usage never enters the series or the model breakdown — it
-        // surfaces solely through the warning-triangle set.
-        XCTAssertTrue(scan.series.daily.isEmpty)
-        XCTAssertEqual(scan.modelUsage?.daily.isEmpty, true)
-        XCTAssertEqual(scan.unknownModelsByDay, ["2024-06-02": ["mystery-model"]])
+        let scan = try XCTUnwrap(DailyUsageAccumulator.merged([unpriced.build(), priced.build()]))
+        let tokenOnly = try XCTUnwrap(scan.series.daily.first { $0.date == "2024-06-03" })
+        XCTAssertEqual(tokenOnly.totalTokens, 120)
+        XCTAssertNil(tokenOnly.costUSD)
+        let mixed = try XCTUnwrap(scan.series.daily.first { $0.date == "2024-06-02" })
+        XCTAssertEqual(mixed.totalTokens, 1_000)
+        XCTAssertEqual(mixed.costUSD, 0.5)
+        let models = try XCTUnwrap(scan.modelUsage?.daily.first { $0.date == "2024-06-02" })
+        XCTAssertEqual(models.models.first { $0.model == "new-model" }?.totalTokens, 900)
+        XCTAssertNil(models.models.first { $0.model == "new-model" }?.costUSD)
+        XCTAssertEqual(scan.unknownModelsByDay["2024-06-02"], ["new-model"])
     }
 }

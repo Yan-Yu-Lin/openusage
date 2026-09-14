@@ -1,24 +1,46 @@
-# OpenUsage
+# OMP Usage
 
-Track your AI coding subscriptions from the macOS menu bar — native Swift edition.
+An independent personal fork of [OpenUsage](https://github.com/robinebers/openusage), adding
+[Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) support. Not an official OpenUsage release.
 
-OpenUsage shows how much of your AI coding plans you've used: session and weekly limits, credits, and spend, all in one popover. Pin your most important metrics straight into the menu bar.
+## OMP support
 
-<p align="center">
-  <img src="assets/screenshot.jpg?v=20260706" alt="OpenUsage menu bar tracker showing Claude and Codex session, weekly, and spend usage" width="900">
-</p>
+- Scans `~/.omp/agent/sessions` alongside Pi and native Claude/Codex logs, including subagents.
+- Attributes native `anthropic` and `openai-codex` routes to the existing Claude/Codex cards.
+  The `cliproxy` route dispatches `claude-*` to Claude and GPT/Codex model families to Codex;
+  arbitrary providers are not guessed from their model names.
+- Retains measured tokens when a model has no known price, without inventing a dollar cost.
+- Reads active, unexpired OMP OAuth access tokens from `~/.omp/agent/agent.db` as a fallback
+  after native credentials. Never reads OMP refresh tokens, refreshes them, or writes OMP's database.
+- Honors OMP's `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`, and `OMP_PROFILE` / `PI_PROFILE` paths.
+  Named profiles live under `.omp/profiles/<name>/agent`. Pi's own session override remains supported.
+- Canonicalizes overlapping/symlinked session roots and deduplicates exact replayed messages.
 
-## Installation
+**Session/weekly limits are account-wide**, including usage through other clients and machines.
+Local token history is only what the scanned logs record; it does not measure OMP's exclusive share
+of a subscription quota. Dollar values are API-price estimates, not extra subscription charges.
+Unattributed Claude history is excluded when multiple Claude accounts are known.
 
-**Homebrew:**
+## Build and install
+
+Requires macOS 15+ and Swift 6.2 / Xcode command-line tools.
 
 ```sh
-brew install --cask openusage
+git clone --branch omp-support https://github.com/Yan-Yu-Lin/openusage.git omp-usage
+cd omp-usage
+bash script/build_omp.sh
+ditto "dist/OMP Usage.app" "$HOME/Applications/OMP Usage.app"
+open "$HOME/Applications/OMP Usage.app"
 ```
 
-**Direct download:** grab the latest universal DMG from the [releases page](https://github.com/robinebers/openusage/releases/latest), open it, and drag OpenUsage to your Applications folder.
+This builds **OMP Usage** with its own settings identity (`dev.arthurlin.omp-usage`), a neutral
+system-symbol mark, no upstream automatic-update feed, and an inert telemetry sink. It does not
+replace the official app. Quit the original OpenUsage before running the fork: both use local API
+port 6736 and would otherwise poll the same subscriptions. Rebuild this branch to update the fork.
+The original upstream build/release scripts and documentation remain below for reference.
 
-Either way, the app updates itself in place via signed, notarized [Sparkle](docs/updates.md) updates. Requires macOS 15 (Sequoia) or later.
+If an OMP login expires, let OMP renew it or use `/login anthropic` / `/login openai-codex` in OMP,
+then refresh the tracker. API keys cannot read subscription quotas.
 
 ## Supported Providers
 
