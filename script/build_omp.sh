@@ -10,6 +10,8 @@ IDENTITY="${CODESIGN_IDENTITY:--}"
 cd "$ROOT_DIR"
 swift build -c "$CONFIG"
 BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+# SwiftPM resource bundles can contain read-only files; stage cleanly instead of overwriting them.
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$BUILD_DIR/OpenUsage" "$APP/Contents/MacOS/OpenUsage"
 cp "$BUILD_DIR/openusage-cli" "$APP/Contents/Helpers/openusage"
