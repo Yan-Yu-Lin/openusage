@@ -1,5 +1,10 @@
 # Changelog
 
+## OMP Usage 0.7.13-omp.1
+
+- Rebase onto upstream v0.7.13-beta.2: Claude/Codex Swap accounts, Rate Limit Resets row, OpenCode 2 attribution, live plan badge.
+- OMP credentials trail Swap vaults and are omitted from Swap account cards; `isCurrent` reloads OMP rows.
+
 ## OMP Usage 0.7.12-omp.1
 
 - Include OMP session history alongside Pi and native Claude/Codex logs, with narrow CLIProxy routing.

@@ -23,6 +23,7 @@ extension CodexAuthStore {
         switch candidate.source {
         case .file(let path): loadAuth(at: path) == candidate
         case .keychain: await loadOffMainActor { loadKeychainAuth() } == candidate
+        case .omp(let path, let id): await loadOffMainActor { loadOMPAuth(path: path, id: id) } == candidate
         }
     }
 }

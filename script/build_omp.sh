@@ -29,7 +29,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>OMP Usage</string>
   <key>CFBundleDisplayName</key><string>OMP Usage</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.7.12-omp.1</string>
+  <key>CFBundleShortVersionString</key><string>0.7.13-omp.1</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSUIElement</key><true/>
